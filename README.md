@@ -20,39 +20,55 @@ Any PHP endpoint works — `/wp-login.php`, `/index.php`, etc. The bug fires dur
 ### Options
 
 ```
-python3 check_vuln.py <url> [--timeout 10] [--headers 300000] [--parts 1]
+python3 check_vuln.py <url> [-u <url>] [--timeout 10] [--headers 300000] [--parts 1] [--no-chunk]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `-u` | | Target URL (alternative to positional arg) |
 | `--timeout` | 10 | HTTP timeout (seconds) |
 | `--headers` | 300000 | Header lines per part (~3.9 MiB on the wire) |
 | `--parts` | 1 | Multipart parts in the payload |
+| `--no-chunk` | off | Send with `Content-Length` instead of chunked TE (use if server returns HTTP 400) |
 
 ### Example output
 
 ```
-[*] target: http://vulnerable-server/index.php
-[*] payload: 1 part(s), 300,000 headers/part
-[*] wire size: 3.9 MiB
-[*] HTTP 500
+PHP2Shell Vulnerability Checker
+CVE-2026-109618 / CVE-2026-109619 — detection only
 
-[+] LIKELY VULNERABLE
-    HTTP 500 + OOM signature — unpatched PHP (mod_php)
+  Target:   http://vulnerable-server/index.php
+  Payload:  1 part(s) x 300,000 headers = ~92 MiB PHP heap
+  Method:   chunked TE (bypasses post_max_size)
 
-    Recommendation: upgrade to PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12+
+  Results
+  ──────────────────────────────────────────────────
+  HTTP status:  200
+  PHP version:  8.4.26 (VULNERABLE)
+  SAPI:         mod_php (Apache)
+  Wire size:    3.9 MiB
+
+  ■ VULNERABLE
+    OOM fatal confirmed in response (HTTP 200). PHP is unpatched — the fatal
+    fires during request-startup parsing, before any app code runs.
+
+  Action required:
+    Upgrade to PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12+
+    Then restart all PHP workers.
 ```
 
 ## Interpreting results
 
-| HTTP | Verdict | What it means |
-|------|---------|---------------|
-| **500** + OOM in body | **Likely vulnerable** | Unpatched mod_php — OOM fatal fired during request-startup parsing |
-| **500** (no OOM text) | **Possibly vulnerable** | `display_errors=Off` hides the error message, but the fatal still fired |
-| **502** | **Possibly vulnerable (FPM)** | PHP-FPM child crashed and was recycled |
-| **200** | **Not vulnerable** | Patched (8.4.27+), or reverse proxy rewrote chunked TE |
-| **413** | **Mitigated** | Reverse proxy / WAF rejected body size |
-| **403** | **Blocked** | WAF rule blocked the request |
+The checker uses **two signals**: the OOM error signature in the response body, and the PHP version from `X-Powered-By` / `Server` headers.
+
+| Verdict | Meaning |
+|---------|---------|
+| **VULNERABLE** | OOM fatal error confirmed in response body — PHP is unpatched |
+| **LIKELY VULNERABLE** | HTTP 500 but `display_errors=Off` hides the OOM text; version confirms vulnerable range |
+| **LIKELY VULNERABLE (FPM)** | HTTP 502 — PHP-FPM child crashed (OOM fatal) |
+| **POSSIBLY VULNERABLE** | HTTP 200 but detected PHP version is in the vulnerable range; a proxy may have blocked the trigger |
+| **NOT VULNERABLE** | PHP version is patched (8.4.27+), or OOM trigger had no effect |
+| **INCONCLUSIVE** | Cannot determine — proxy/WAF blocked the request (try `--no-chunk` or test directly) |
 
 ### Important notes
 
