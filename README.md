@@ -107,6 +107,7 @@ Restart all workers after upgrading — the vulnerable state lives in running pr
 
 ## References
 
+- VXRL — [PHP2Shell](https://vxrl.medium.com/php2shell-bfa0d8db5e84)
 - Calif.io — [php2shell](https://calif.io/php2shell/)
 - Wiz Research — [PHP2Shell](https://www.wiz.io/blog/php2shell-php-rce)
 - CVE-2026-109618 — [GHSA-w8hw-w9fx-j79w](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
