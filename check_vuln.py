@@ -564,15 +564,16 @@ def main() -> int:
                    help="concentrated: all headers in one part (default); "
                         "spread: distribute across parts (for proxies that "
                         "limit per-part MIME headers)")
-    g.add_argument("--cloudflare", action="store_true", default=None,
-                   help="preset for Cloudflare-fronted targets: --no-chunk "
-                        "--strategy spread --parts 100 --headers 300000")
+    ap.add_argument("--cloudflare", action="store_true",
+                    help="preset for Cloudflare-fronted targets. Active mode: "
+                         "--no-chunk --strategy spread --parts 100. Passive "
+                         "mode: accepted but has no effect (no payload is sent)")
     args = ap.parse_args()
 
-    # Active-only flags gate the only dangerous code path.
+    # Payload-shaping flags gate the only dangerous code path.
     if not args.active:
         provided = [f"--{n}" for n in ("parts", "headers", "no_chunk",
-                                       "strategy", "cloudflare")
+                                       "strategy")
                     if getattr(args, n) is not None]
         if provided:
             ap.error(f"{', '.join(provided)} require --active "
@@ -588,6 +589,10 @@ def main() -> int:
     # ── passive ──
     if not args.active:
         print(f"{DIM}passive mode — banner check only, no exploit probes{RESET}\n")
+        if args.cloudflare:
+            print(f"  {DIM}Cloudflare preset noted: passive mode sends no "
+                  f"payload, so there is nothing to preset. Banners only — "
+                  f"run --active --cloudflare for a behavioral check.{RESET}\n")
         r = run_passive(url, args.timeout)
         if r["exit_code"] == 2:
             print(f"  {RED}ERROR{RESET}: {r['reason']}\n")

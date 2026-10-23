@@ -36,6 +36,8 @@ Sends `HEAD` (falls back to `GET` on 405/501) and reads `Server` / `X-Powered-By
 
 If several banners advertise different versions (e.g. proxy + backend), the tool prefers a warning over a reassuring banner — an `ok` banner never masks a vulnerable one.
 
+Behind Cloudflare? Passive mode works as-is (origin headers pass through the edge by default). `--cloudflare` is accepted here as a no-op — there is no payload to preset; run `--active --cloudflare` for a behavioral check.
+
 ### Active mode (`--active`)
 
 Sends the publicly-documented Stage-1 OOM trigger — a multipart header-bomb over chunked transfer encoding — and classifies the response. This is strong behavioral evidence, but **invasive**: on a vulnerable server this is the exploit's first stage. It can recycle PHP workers and leave request state corrupted. The tool prints a warning and requires confirmation; `--yes` skips the prompt for scripting (refused on non-interactive runs without it).
@@ -52,7 +54,9 @@ python3 check_vuln.py <url> --active [--yes] [--timeout 10]
 | `--headers` | 300000 | Header lines total (~3.9 MiB on the wire) |
 | `--no-chunk` | off | Send with `Content-Length` instead of chunked TE (use if the server returns HTTP 400) |
 | `--strategy` | concentrated | `spread` distributes headers across parts (for proxies that limit per-part MIME headers) |
-| `--cloudflare` | off | Preset: `--no-chunk --strategy spread --parts 100` |
+| `--cloudflare` | off | Preset: `--no-chunk --strategy spread --parts 100` (also accepted in passive mode as a no-op) |
+
+The payload flags (`--parts`, `--headers`, `--no-chunk`, `--strategy`) are rejected with exit `2` without `--active` — passive mode has no payload to shape.
 
 Active-mode verdicts:
 
