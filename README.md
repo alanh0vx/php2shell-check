@@ -2,7 +2,7 @@
 
 Quick vulnerability checker for **CVE-2026-109618** & **CVE-2026-109619** (PHP2Shell) — the pre-auth RCE in PHP core disclosed October 2026.
 
-**Detection only.** This tool sends the publicly-documented Stage-1 OOM trigger and reads the HTTP status code. It does not exploit anything, exfiltrate data, or plant anything on the target.
+**Safe by default.** With no flags the tool is **passive**: it reads `Server` / `X-Powered-By` banners and compares the advertised PHP version against the upstream fixed releases. It sends no exploit probes. A behavioral check that sends the publicly-documented Stage-1 OOM trigger is available behind `--active` — it prints a warning and asks for confirmation first.
 
 ## Affected versions
 
@@ -11,72 +11,92 @@ Every PHP release from **5.4** (2012) through **8.4.26** on both `mod_php` and `
 ## Usage
 
 ```bash
-# No dependencies — Python 3.6+ standard library only
+# No dependencies — Python 3.8+ standard library only
+
+# Passive (default): banner check only, no exploit probes
 python3 check_vuln.py https://your-app.example.com/index.php
+
+# Machine-readable output + exit codes (0 ok / 1 vulnerable / 2 usage / 3 unknown)
+python3 check_vuln.py https://your-app.example.com --json
+
+# Active: send the Stage-1 OOM trigger and classify the response (invasive;
+# asks for confirmation unless --yes)
+python3 check_vuln.py https://your-app.example.com/wp-login.php --active
 ```
 
-Any PHP endpoint works — `/wp-login.php`, `/index.php`, etc. The bug fires during request-startup parsing, before any application code runs.
+### Passive mode (default)
 
-### Options
+Sends `HEAD` (falls back to `GET` on 405/501) and reads `Server` / `X-Powered-By` only. It never sends the trigger. Classification follows the upstream fixed releases:
+
+| Result | Exit | Meaning |
+|--------|------|---------|
+| **OK** | `0` | Advertised version meets a fixed release (8.2.35 / 8.3.36 / 8.4.27 / 8.5.12). **This describes the advertised version only** — the installed build is not verified, and distro backports are invisible to banners. |
+| **POTENTIALLY VULNERABLE** | `1` | Advertised version is below its branch's fix, or the branch (5.4–8.1) no longer receives fixes. |
+| **UNKNOWN** | `3` | Version hidden, unrecognized, or a prerelease (`dev`/`alpha`/`beta`/`rc`). |
+
+If several banners advertise different versions (e.g. proxy + backend), the tool prefers a warning over a reassuring banner — an `ok` banner never masks a vulnerable one.
+
+### Active mode (`--active`)
+
+Sends the publicly-documented Stage-1 OOM trigger — a multipart header-bomb over chunked transfer encoding — and classifies the response. This is strong behavioral evidence, but **invasive**: on a vulnerable server this is the exploit's first stage. It can recycle PHP workers and leave request state corrupted. The tool prints a warning and requires confirmation; `--yes` skips the prompt for scripting (refused on non-interactive runs without it).
 
 ```
-python3 check_vuln.py <url> [-u <url>] [--timeout 10] [--headers 300000] [--parts 1] [--no-chunk]
+python3 check_vuln.py <url> --active [--yes] [--timeout 10]
+                          [--parts 1] [--headers 300000] [--no-chunk]
+                          [--strategy concentrated|spread] [--cloudflare]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-u` | | Target URL (alternative to positional arg) |
-| `--timeout` | 10 | HTTP timeout (seconds) |
-| `--headers` | 300000 | Header lines per part (~3.9 MiB on the wire) |
 | `--parts` | 1 | Multipart parts in the payload |
-| `--no-chunk` | off | Send with `Content-Length` instead of chunked TE (use if server returns HTTP 400) |
+| `--headers` | 300000 | Header lines total (~3.9 MiB on the wire) |
+| `--no-chunk` | off | Send with `Content-Length` instead of chunked TE (use if the server returns HTTP 400) |
+| `--strategy` | concentrated | `spread` distributes headers across parts (for proxies that limit per-part MIME headers) |
+| `--cloudflare` | off | Preset: `--no-chunk --strategy spread --parts 100` |
 
-### Example output
+Active-mode verdicts:
+
+| Verdict | Exit | Meaning |
+|---------|------|---------|
+| **VULNERABLE** | `1` | OOM fatal signature confirmed in the response body — PHP is unpatched |
+| **LIKELY VULNERABLE** | `1` | HTTP 500 (`display_errors=Off` hides the OOM text) or HTTP 502 (FPM child crashed) |
+| **POSSIBLY VULNERABLE** | `1` | HTTP 200 but advertised version is in the vulnerable range; a proxy may have blocked the trigger |
+| **NOT VULNERABLE** | `0` | Trigger delivered and handled normally, and the advertised version meets a fixed release. Advertised only — the installed build is not verified |
+| **PATCHED OR BLOCKED** | `3` | Trigger handled normally but no version disclosed — cannot rule out a proxy absorbing it |
+| **INCONCLUSIVE / BLOCKED** | `3` | Proxy/WAF rejected the request (try `--no-chunk`, `--cloudflare`, or test the PHP port directly) |
+
+### Example output (passive)
 
 ```
 PHP2Shell Vulnerability Checker
-CVE-2026-109618 / CVE-2026-109619 — detection only
-
-  Target:   http://vulnerable-server/index.php
-  Payload:  1 part(s) x 300,000 headers = ~92 MiB PHP heap
-  Method:   chunked TE (bypasses post_max_size)
+CVE-2026-109618 / CVE-2026-109619
+passive mode — banner check only, no exploit probes
 
   Results
   ──────────────────────────────────────────────────
-  HTTP status:  200
-  PHP version:  8.4.26 (VULNERABLE)
-  SAPI:         mod_php (Apache)
-  Wire size:    3.9 MiB
+  Target:       http://vulnerable-server/index.php
+  Banners:      Apache/2.4.69 (Debian)
+                PHP/8.4.26
+  PHP version:  8.4.26
 
-  ■ VULNERABLE
-    OOM fatal confirmed in response (HTTP 200). PHP is unpatched — the fatal
-    fires during request-startup parsing, before any app code runs.
+  ■ POTENTIALLY VULNERABLE
+    PHP 8.4.26: potentially vulnerable — below the upstream fixed release
+    for its branch (8.4.27). HTTP headers cannot tell whether this version
+    contains a backported fix.
 
   Action required:
-    Upgrade to PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12+
-    Then restart all PHP workers.
+    Upgrade to PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12+ and restart all PHP workers.
+
+  Stronger evidence: re-run with --active (sends the Stage-1 trigger — invasive).
 ```
-
-## Interpreting results
-
-The checker uses **two signals**: the OOM error signature in the response body, and the PHP version from `X-Powered-By` / `Server` headers.
-
-| Verdict | Meaning |
-|---------|---------|
-| **VULNERABLE** | OOM fatal error confirmed in response body — PHP is unpatched |
-| **LIKELY VULNERABLE** | HTTP 500 but `display_errors=Off` hides the OOM text; version confirms vulnerable range |
-| **LIKELY VULNERABLE (FPM)** | HTTP 502 — PHP-FPM child crashed (OOM fatal) |
-| **POSSIBLY VULNERABLE** | HTTP 200 but detected PHP version is in the vulnerable range; a proxy may have blocked the trigger |
-| **NOT VULNERABLE** | PHP version is patched (8.4.27+), or OOM trigger had no effect |
-| **INCONCLUSIVE** | Cannot determine — proxy/WAF blocked the request (try `--no-chunk` or test directly) |
 
 ### Important notes
 
-- **Behind nginx?** Nginx typically buffers the request and re-adds `Content-Length`, which lets PHP's `post_max_size` check reject the body before the amplifier fires. A `200` behind nginx may mean the proxy blocked the trigger, not that PHP is patched. Test against the PHP port directly if possible.
-- **False negatives:** A reverse proxy, WAF, or CDN (Cloudflare, AWS ALB, etc.) can absorb the payload before it reaches PHP. A clean result behind infrastructure does not guarantee the PHP version is patched.
-- **False positives:** Some applications return HTTP 500 for other reasons. The tool looks for the OOM signature (`memory` / `Unknown on line 0`) in the response body to reduce false positives, but `display_errors=Off` hides this.
+- **Headers are not proof.** Banners can be spoofed, hidden, or lag behind the real binary. `OK` means the *advertised* version meets an upstream fix — a distro backport with an unchanged version string looks identical to a vulnerable one. Server-side checks (`php -v`, package manager) are stronger evidence.
+- **Behind nginx?** Nginx typically buffers the request and re-adds `Content-Length`, which lets PHP's `post_max_size` check reject the body before the amplifier fires. In active mode, a `200` behind nginx may mean the proxy blocked the trigger, not that PHP is patched.
+- **Authorization.** Active mode sends a ~4 MiB payload that forces a memory-limit fatal on vulnerable targets. Only run it against systems you own or have explicit authorization to test.
 
-## How it works
+## How the trigger works (active mode)
 
 The technique is fully public (Calif.io, Wiz Research, October 2026):
 
@@ -84,7 +104,7 @@ The technique is fully public (Calif.io, Wiz Research, October 2026):
 2. **Header amplification** — one multipart part with ~300,000 header lines. PHP retains ~320 bytes of heap per header line, so ~3.9 MiB on the wire drives ~96 MiB of allocation, blowing a 64 MiB `memory_limit`.
 3. **The OOM fires during request-startup parsing** (`"Unknown on line 0"`), before any application code runs. On unpatched PHP this leaves dangling pointers that the CVEs exploit.
 
-This tool only sends the trigger and reads the response — it does not attempt to exploit the dangling state.
+The tool only sends the trigger and reads the response — it does not attempt to exploit the dangling state.
 
 ## Fix
 
@@ -112,6 +132,10 @@ Restart all workers after upgrading — the vulnerable state lives in running pr
 - Wiz Research — [PHP2Shell](https://www.wiz.io/blog/php2shell-php-rce)
 - CVE-2026-109618 — [GHSA-w8hw-w9fx-j79w](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
 - CVE-2026-109619 — [GHSA-6wmf-4rv5-p3rp](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)
+- Version-semantics reference: [openai/php2shell-checker](https://github.com/openai/php2shell-checker)
+
+Full reproducible lab (vulnerable + patched victims, demos, RCE chain):
+[alanh0vx/php2shell-lab](https://github.com/alanh0vx/php2shell-lab)
 
 ## Disclaimer
 
